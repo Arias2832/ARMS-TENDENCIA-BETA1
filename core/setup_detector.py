@@ -1,7 +1,7 @@
 """
 ARMS v1.0 - Trend Following Setup Detector
 EMA20/EMA50 Crossover Strategy
-With DI H4 Filter
+With DI H4 Filter + BE ATR Filter
 """
 
 import pandas as pd
@@ -14,7 +14,7 @@ class SetupDetector:
 
     def __init__(self, symbol, min_separation_pips=3, stop_loss_pips=20,
                  use_di_h4_filter=False, di_h4_min_diff=3,
-                 use_be_atr=False, be_atr_multiplier=1.3,
+                 use_be_atr=False, be_atr_multiplier=1.1,
                  use_tp_atr=False, tp_atr_multiplier=4.5):
         """
         Initialize detector with automatic pip factor detection
@@ -45,6 +45,7 @@ class SetupDetector:
 
         # Statistics for filtered trades
         self.filtered_by_di_h4 = 0
+        self.be_activated = 0
 
         # Auto-detect pip factor
         self.pip_factor = config.get_pip_factor(symbol)
@@ -125,7 +126,6 @@ class SetupDetector:
             return True
 
         # Find the H4 candle that contains this H1 entry time
-        # H4 candle covers 4 hours, so we need to find which H4 candle the H1 falls into
         entry_dt = pd.to_datetime(entry_datetime)
 
         # Get H4 candles that are <= entry time (most recent completed H4)
@@ -157,7 +157,8 @@ class SetupDetector:
 
         Exit conditions (priority order):
         1. Stop loss hit (20 pips fixed)
-        2. EMA20 crosses EMA50 back (trend reversal)
+        2. Break Even by ATR retracement
+        3. EMA20 crosses EMA50 back (trend reversal)
 
         Returns:
             dict with trade outcome details including exit_idx and exit_type
@@ -170,11 +171,14 @@ class SetupDetector:
         else:  # SHORT
             sl_price = entry_price + sl_distance
 
+        # BE ATR state
+        retroceso_profundo = False
+
         # Simulate forward from entry
         for i in range(entry_idx, len(df)):
             candle = df.iloc[i]
 
-            # Check Stop Loss FIRST (higher priority)
+            # Check Stop Loss FIRST (highest priority)
             if direction == 'LONG':
                 if candle['low'] <= sl_price:
                     pips = (sl_price - entry_price) * self.pip_factor
@@ -201,6 +205,48 @@ class SetupDetector:
                         'candles_held': i - entry_idx,
                         'exit_reason': 'Stop Loss'
                     }
+
+            # Check BE ATR (second priority) - only after entry candle
+            if self.use_be_atr and i > entry_idx:
+                atr_val = candle['atr']
+
+                if atr_val > 0 and not np.isnan(atr_val):
+                    # Check for deep retracement
+                    if direction == 'LONG':
+                        retroceso = (entry_price - candle['low']) / atr_val
+                        if retroceso >= self.be_atr_multiplier:
+                            retroceso_profundo = True
+                    else:  # SHORT
+                        retroceso = (candle['high'] - entry_price) / atr_val
+                        if retroceso >= self.be_atr_multiplier:
+                            retroceso_profundo = True
+
+                    # If deep retracement detected, check for return to entry
+                    if retroceso_profundo:
+                        if direction == 'LONG' and candle['high'] >= entry_price:
+                            self.be_activated += 1
+                            return {
+                                'outcome': 'BE',
+                                'exit_date': candle['datetime'],
+                                'exit_price': entry_price,
+                                'exit_idx': i,
+                                'exit_type': 'BE',
+                                'pips': 0.0,
+                                'candles_held': i - entry_idx,
+                                'exit_reason': 'Break Even ATR'
+                            }
+                        if direction == 'SHORT' and candle['low'] <= entry_price:
+                            self.be_activated += 1
+                            return {
+                                'outcome': 'BE',
+                                'exit_date': candle['datetime'],
+                                'exit_price': entry_price,
+                                'exit_idx': i,
+                                'exit_type': 'BE',
+                                'pips': 0.0,
+                                'candles_held': i - entry_idx,
+                                'exit_reason': 'Break Even ATR'
+                            }
 
             # Check EMA cross reversal (exit condition)
             if i > entry_idx:  # Don't check on entry candle
@@ -335,6 +381,12 @@ class SetupDetector:
                             last_cross_direction = None
                             separation_achieved = False
 
+                        elif trade_result['exit_type'] == 'BE':
+                            # Break Even exit - RESET everything
+                            skip_until_idx = trade_result['exit_idx']
+                            last_cross_direction = None
+                            separation_achieved = False
+
                         elif trade_result['exit_type'] == 'CROSS':
                             # Cross reversal exit - Use as NEW signal
                             skip_until_idx = trade_result['exit_idx']
@@ -348,6 +400,8 @@ class SetupDetector:
         print(f"\n✅ Setup detection completed: {len(self.setups)} setups found")
         if self.use_di_h4_filter:
             print(f"🔧 Filtered by DI H4: {self.filtered_by_di_h4} potential entries rejected")
+        if self.use_be_atr:
+            print(f"🔧 BE ATR activated: {self.be_activated} trades closed at break even")
 
         return self.setups
 
@@ -421,6 +475,7 @@ class SetupDetector:
         total_setups = len(df)
         wins = len(df[df['outcome'] == 'WIN'])
         losses = len(df[df['outcome'] == 'LOSS'])
+        be_count = len(df[df['outcome'] == 'BE'])
         win_rate = (wins / total_setups * 100) if total_setups > 0 else 0
 
         total_pips = df['pips'].sum()
@@ -440,7 +495,7 @@ class SetupDetector:
         else:
             print(f"   ❌ DI H4: OFF")
         if self.use_be_atr:
-            print(f"   ✅ BE ATR (multiplier: {self.be_atr_multiplier})")
+            print(f"   ✅ BE ATR (multiplier: {self.be_atr_multiplier}) - Activated: {self.be_activated}")
         else:
             print(f"   ❌ BE ATR: OFF")
         if self.use_tp_atr:
@@ -450,7 +505,7 @@ class SetupDetector:
 
         print(f"\n📊 PERFORMANCE:")
         print(f"   Total Setups: {total_setups}")
-        print(f"   Wins: {wins} | Losses: {losses}")
+        print(f"   Wins: {wins} | Losses: {losses} | BE: {be_count}")
         print(f"   Win Rate: {win_rate:.1f}%")
         print(f"\n💰 PIPS:")
         print(f"   Total: {total_pips:+.1f} pips")

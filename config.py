@@ -62,8 +62,8 @@ USE_DI_H4_FILTER = True
 DI_H4_MIN_DIFF = 3  # Mínima diferencia DI para confirmar dirección
 
 # Filtro 2: Break Even por retroceso ATR
-USE_BE_ATR = False
-BE_ATR_MULTIPLIER = 1.3  # Retroceso en ATR para activar BE
+USE_BE_ATR = True
+BE_ATR_MULTIPLIER = 1.0  # Retroceso en ATR para activar BE
 
 # Filtro 3: Take Profit dinámico con ATR
 USE_TP_ATR = False
