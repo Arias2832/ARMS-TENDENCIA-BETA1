@@ -1,7 +1,7 @@
 """
 ARMS v1.0 - Trend Following Setup Detector
 EMA20/EMA50 Crossover Strategy
-DEBUG VERSION - Focused on 29-30 Oct issue
+With DI H4 Filter
 """
 
 import pandas as pd
@@ -12,7 +12,10 @@ import config
 class SetupDetector:
     """Trading setup detector for trend following strategy"""
 
-    def __init__(self, symbol, min_separation_pips=3, stop_loss_pips=20):
+    def __init__(self, symbol, min_separation_pips=3, stop_loss_pips=20,
+                 use_di_h4_filter=False, di_h4_min_diff=3,
+                 use_be_atr=False, be_atr_multiplier=1.3,
+                 use_tp_atr=False, tp_atr_multiplier=4.5):
         """
         Initialize detector with automatic pip factor detection
 
@@ -20,11 +23,28 @@ class SetupDetector:
             symbol: Currency pair (for automatic pip factor)
             min_separation_pips: Minimum pip separation to activate entry search
             stop_loss_pips: Fixed stop loss in pips
+            use_di_h4_filter: Enable DI H4 directional filter
+            di_h4_min_diff: Minimum DI difference for H4 filter
+            use_be_atr: Enable Break Even by ATR retracement
+            be_atr_multiplier: ATR multiplier for BE activation
+            use_tp_atr: Enable dynamic TP by ATR
+            tp_atr_multiplier: ATR multiplier for TP
         """
         self.symbol = symbol.upper()
         self.min_separation_pips = min_separation_pips
         self.stop_loss_pips = stop_loss_pips
         self.setups = []
+
+        # Filter settings
+        self.use_di_h4_filter = use_di_h4_filter
+        self.di_h4_min_diff = di_h4_min_diff
+        self.use_be_atr = use_be_atr
+        self.be_atr_multiplier = be_atr_multiplier
+        self.use_tp_atr = use_tp_atr
+        self.tp_atr_multiplier = tp_atr_multiplier
+
+        # Statistics for filtered trades
+        self.filtered_by_di_h4 = 0
 
         # Auto-detect pip factor
         self.pip_factor = config.get_pip_factor(symbol)
@@ -36,6 +56,10 @@ class SetupDetector:
         print(f"   🧮 Pip factor: {self.pip_factor}")
         print(f"   📏 Min separation: {self.min_separation_pips} pips")
         print(f"   🛑 Stop loss: {self.stop_loss_pips} pips")
+        print(f"\n🔧 FILTERS:")
+        print(f"   DI H4: {'ON' if self.use_di_h4_filter else 'OFF'} (min diff: {self.di_h4_min_diff})")
+        print(f"   BE ATR: {'ON' if self.use_be_atr else 'OFF'} (multiplier: {self.be_atr_multiplier})")
+        print(f"   TP ATR: {'ON' if self.use_tp_atr else 'OFF'} (multiplier: {self.tp_atr_multiplier})")
 
     def detect_ema_cross(self, df, idx):
         """
@@ -54,20 +78,10 @@ class SetupDetector:
 
         # Bullish cross: EMA20 was below, now above EMA50
         if prev_candle['ema20'] <= prev_candle['ema50'] and curr_candle['ema20'] > curr_candle['ema50']:
-            # DEBUG: Print cross detection
-            if '2025-10-29' in str(curr_candle['datetime']) or '2025-10-30' in str(curr_candle['datetime']):
-                print(f"\n🔄 [CROSS DETECTED] {curr_candle['datetime']} | LONG")
-                print(f"   Prev: EMA20={prev_candle['ema20']:.5f} EMA50={prev_candle['ema50']:.5f}")
-                print(f"   Curr: EMA20={curr_candle['ema20']:.5f} EMA50={curr_candle['ema50']:.5f}")
             return 'LONG'
 
         # Bearish cross: EMA20 was above, now below EMA50
         if prev_candle['ema20'] >= prev_candle['ema50'] and curr_candle['ema20'] < curr_candle['ema50']:
-            # DEBUG: Print cross detection
-            if '2025-10-29' in str(curr_candle['datetime']) or '2025-10-30' in str(curr_candle['datetime']):
-                print(f"\n🔄 [CROSS DETECTED] {curr_candle['datetime']} | SHORT")
-                print(f"   Prev: EMA20={prev_candle['ema20']:.5f} EMA50={prev_candle['ema50']:.5f}")
-                print(f"   Curr: EMA20={curr_candle['ema20']:.5f} EMA50={curr_candle['ema50']:.5f}")
             return 'SHORT'
 
         return None
@@ -83,11 +97,6 @@ class SetupDetector:
         ema_diff_pips = ema_diff * self.pip_factor
 
         is_separated = ema_diff_pips >= self.min_separation_pips
-
-        # DEBUG: Print separation check for 29-30 Oct
-        if is_separated and ('2025-10-29' in str(candle['datetime']) or '2025-10-30' in str(candle['datetime'])):
-            print(f"\n✅ [SEPARATION] {candle['datetime']} | {ema_diff_pips:.2f} pips | ACTIVATED")
-
         return is_separated
 
     def check_ema_touch(self, candle):
@@ -98,20 +107,55 @@ class SetupDetector:
             True if candle's range includes EMA20
         """
         touches = candle['low'] <= candle['ema20'] <= candle['high']
-
-        # DEBUG: Print touch checks for 29-30 Oct
-        if '2025-10-29' in str(candle['datetime']) or '2025-10-30' in str(candle['datetime']):
-            status = "✅ TOUCHES" if touches else "❌ NO TOUCH"
-            print(
-                f"   [TOUCH CHECK] {candle['datetime']} | EMA20={candle['ema20']:.5f} | High={candle['high']:.5f} | Low={candle['low']:.5f} | {status}")
-
         return touches
+
+    def check_di_h4_filter(self, df_htf, entry_datetime, direction):
+        """
+        Check if H4 DI alignment confirms trade direction
+
+        Args:
+            df_htf: H4 DataFrame with indicators
+            entry_datetime: Entry time in H1
+            direction: 'LONG' or 'SHORT'
+
+        Returns:
+            True if H4 DI confirms direction, False otherwise
+        """
+        if df_htf is None or not self.use_di_h4_filter:
+            return True
+
+        # Find the H4 candle that contains this H1 entry time
+        # H4 candle covers 4 hours, so we need to find which H4 candle the H1 falls into
+        entry_dt = pd.to_datetime(entry_datetime)
+
+        # Get H4 candles that are <= entry time (most recent completed H4)
+        mask = df_htf['datetime'] <= entry_dt
+        if not mask.any():
+            return True  # No H4 data available, allow trade
+
+        # Get the most recent H4 candle
+        h4_candle = df_htf[mask].iloc[-1]
+
+        # Calculate DI difference
+        plus_di = h4_candle['plus_di']
+        minus_di = h4_candle['minus_di']
+
+        if direction == 'LONG':
+            # For LONG: +DI should be stronger than -DI
+            di_diff = plus_di - minus_di
+            passes = di_diff >= self.di_h4_min_diff
+        else:  # SHORT
+            # For SHORT: -DI should be stronger than +DI
+            di_diff = minus_di - plus_di
+            passes = di_diff >= self.di_h4_min_diff
+
+        return passes
 
     def simulate_trade(self, df, entry_idx, direction, entry_price):
         """
         Simulate trade outcome from entry forward
 
-        Exit conditions:
+        Exit conditions (priority order):
         1. Stop loss hit (20 pips fixed)
         2. EMA20 crosses EMA50 back (trend reversal)
 
@@ -217,14 +261,14 @@ class SetupDetector:
             'exit_reason': 'End of Data'
         }
 
-    def detect_all_setups(self, df, start_date, end_date):
+    def detect_all_setups(self, df, df_htf=None, start_date=None, end_date=None):
         """
         Detect all trading setups in the given period
 
-        CORRECTED LOGIC:
+        LOGIC:
         1. Detect EMA20/EMA50 cross (updates with each new cross)
         2. Wait for separation >= 3 pips (activates entry search)
-        3. First candle that touches EMA20 → ENTER
+        3. First candle that touches EMA20 → ENTER (if passes filters)
         4. Exit handling:
            - Stop Loss: RESET all states, wait for NEW cross
            - Cross Reversal: Use that cross as NEW signal immediately
@@ -240,9 +284,6 @@ class SetupDetector:
             return []
 
         print(f"📊 Analyzing {len(analysis_df)} candles...")
-        print("\n" + "=" * 70)
-        print("DEBUG MODE: Tracking 29-30 Oct period")
-        print("=" * 70)
 
         # State variables
         last_cross_direction = None
@@ -251,15 +292,6 @@ class SetupDetector:
 
         for i in range(1, len(analysis_df)):
             candle = analysis_df.iloc[i]
-
-            # DEBUG: Show state for 29-30 Oct
-            if '2025-10-29' in str(candle['datetime']) or '2025-10-30' in str(candle['datetime']):
-                if i <= skip_until_idx:
-                    print(f"\n⏭️  [SKIP] {candle['datetime']} | skip_until_idx={skip_until_idx}, current_idx={i}")
-                    continue
-                else:
-                    print(
-                        f"\n📍 [PROCESSING] {candle['datetime']} | Direction={last_cross_direction} | Separated={separation_achieved}")
 
             # Skip if we're within an exited trade period
             if i <= skip_until_idx:
@@ -287,9 +319,13 @@ class SetupDetector:
                     touches_ema = self.check_ema_touch(candle)
 
                     if touches_ema:
-                        # ENTRY CONDITIONS MET
-                        print(f"\n🎯 [ENTRY] {candle['datetime']} | {last_cross_direction} @ {candle['ema20']:.5f}")
+                        # Check DI H4 filter before entry
+                        if not self.check_di_h4_filter(df_htf, candle['datetime'], last_cross_direction):
+                            self.filtered_by_di_h4 += 1
+                            # Don't enter, but don't reset - keep looking for next touch
+                            continue
 
+                        # ENTRY CONDITIONS MET (passed all filters)
                         trade_result = self._process_entry(analysis_df, i, last_cross_direction, candle)
 
                         # Handle exit based on type
@@ -298,22 +334,21 @@ class SetupDetector:
                             skip_until_idx = trade_result['exit_idx']
                             last_cross_direction = None
                             separation_achieved = False
-                            print(
-                                f"   [EXIT SL] {trade_result['exit_date']} | Reset states | skip_until={skip_until_idx}")
 
                         elif trade_result['exit_type'] == 'CROSS':
                             # Cross reversal exit - Use as NEW signal
                             skip_until_idx = trade_result['exit_idx']
                             last_cross_direction = trade_result['exit_cross_direction']
                             separation_achieved = False
-                            print(f"   [EXIT CROSS] {trade_result['exit_date']} | New direction={last_cross_direction}")
 
                         else:  # EOD
                             # End of data - just stop
                             skip_until_idx = trade_result['exit_idx']
 
-        print("\n" + "=" * 70)
-        print(f"✅ Setup detection completed: {len(self.setups)} setups found")
+        print(f"\n✅ Setup detection completed: {len(self.setups)} setups found")
+        if self.use_di_h4_filter:
+            print(f"🔧 Filtered by DI H4: {self.filtered_by_di_h4} potential entries rejected")
+
         return self.setups
 
     def _process_entry(self, df, entry_idx, direction, candle):
@@ -397,6 +432,22 @@ class SetupDetector:
         print(f"EXECUTIVE SUMMARY - {symbol}")
         print(f"Period: {start_date.date()} to {end_date.date()}")
         print("=" * 70)
+
+        # Show active filters
+        print(f"\n🔧 ACTIVE FILTERS:")
+        if self.use_di_h4_filter:
+            print(f"   ✅ DI H4 (min diff: {self.di_h4_min_diff}) - Rejected: {self.filtered_by_di_h4}")
+        else:
+            print(f"   ❌ DI H4: OFF")
+        if self.use_be_atr:
+            print(f"   ✅ BE ATR (multiplier: {self.be_atr_multiplier})")
+        else:
+            print(f"   ❌ BE ATR: OFF")
+        if self.use_tp_atr:
+            print(f"   ✅ TP ATR (multiplier: {self.tp_atr_multiplier})")
+        else:
+            print(f"   ❌ TP ATR: OFF")
+
         print(f"\n📊 PERFORMANCE:")
         print(f"   Total Setups: {total_setups}")
         print(f"   Wins: {wins} | Losses: {losses}")

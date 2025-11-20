@@ -14,6 +14,7 @@ MT5_SERVER = "FPMarkets-Demo"
 # Trading pair and timeframe
 SYMBOL = "EURUSD"
 TIMEFRAME = mt5.TIMEFRAME_H1
+TIMEFRAME_HTF = mt5.TIMEFRAME_H4  # Higher timeframe for DI filter
 
 # Timeframe mapping for file naming
 TIMEFRAME_MAP = {
@@ -30,7 +31,7 @@ DATA_START_DATE = datetime(2019, 1, 1)
 DATA_END_DATE = datetime(2025, 11, 16)
 
 # Analysis period (actual trading period)
-ANALYSIS_START_DATE = datetime(2025, 9, 23)
+ANALYSIS_START_DATE = datetime(2019, 1, 1)
 ANALYSIS_END_DATE = datetime(2025, 11, 16)
 
 # Technical Indicators
@@ -52,26 +53,46 @@ ATR_ADJUSTMENT_FACTOR = 0.99
 EMA_CROSS_MIN_SEPARATION = 3  # Minimum pips separation to activate entry search
 STOP_LOSS_PIPS = 20  # Fixed stop loss in pips
 
+# =============================================================================
+# FILTROS OPTIMIZADOS
+# =============================================================================
+
+# Filtro 1: DI H4 - Alineación con timeframe superior
+USE_DI_H4_FILTER = True
+DI_H4_MIN_DIFF = 3  # Mínima diferencia DI para confirmar dirección
+
+# Filtro 2: Break Even por retroceso ATR
+USE_BE_ATR = False
+BE_ATR_MULTIPLIER = 1.3  # Retroceso en ATR para activar BE
+
+# Filtro 3: Take Profit dinámico con ATR
+USE_TP_ATR = False
+TP_ATR_MULTIPLIER = 4.5  # Distancia TP en múltiplos de ATR
+
+# =============================================================================
 # File Management
+# =============================================================================
 DATA_FOLDER = "Data"
 RESULTS_FOLDER = "results"
 LOGS_FOLDER = "logs"
 
 
-def get_timeframe_string():
-    """Get timeframe string for current TIMEFRAME"""
-    return TIMEFRAME_MAP.get(TIMEFRAME, "H1")
+def get_timeframe_string(timeframe=None):
+    """Get timeframe string for given or current TIMEFRAME"""
+    if timeframe is None:
+        timeframe = TIMEFRAME
+    return TIMEFRAME_MAP.get(timeframe, "H1")
 
 
-def get_raw_data_file():
+def get_raw_data_file(timeframe=None):
     """Generate raw data filename"""
-    tf_str = get_timeframe_string()
+    tf_str = get_timeframe_string(timeframe)
     return f"{DATA_FOLDER}/{SYMBOL}_{tf_str}_raw.csv"
 
 
-def get_processed_file():
+def get_processed_file(timeframe=None):
     """Generate processed data filename (with all indicators)"""
-    tf_str = get_timeframe_string()
+    tf_str = get_timeframe_string(timeframe)
     return f"{RESULTS_FOLDER}/{SYMBOL}_{tf_str}_processed.csv"
 
 
