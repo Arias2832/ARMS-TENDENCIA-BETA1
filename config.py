@@ -63,11 +63,11 @@ DI_H4_MIN_DIFF = 3  # Mínima diferencia DI para confirmar dirección
 
 # Filtro 2: Break Even por retroceso ATR
 USE_BE_ATR = True
-BE_ATR_MULTIPLIER = 1.0  # Retroceso en ATR para activar BE
+BE_ATR_MULTIPLIER = 1.1  # Retroceso en ATR para activar BE
 
 # Filtro 3: Take Profit dinámico con ATR
-USE_TP_ATR = False
-TP_ATR_MULTIPLIER = 4.5  # Distancia TP en múltiplos de ATR
+USE_TP_ATR = True
+TP_ATR_MULTIPLIER = 4.0  # Distancia TP en múltiplos de ATR
 
 # =============================================================================
 # File Management

@@ -1,7 +1,7 @@
 """
 ARMS v1.0 - Trend Following Setup Detector
 EMA20/EMA50 Crossover Strategy
-With DI H4 Filter + BE ATR Filter
+With DI H4 Filter + BE ATR Filter + TP ATR Filter
 """
 
 import pandas as pd
@@ -46,6 +46,7 @@ class SetupDetector:
         # Statistics for filtered trades
         self.filtered_by_di_h4 = 0
         self.be_activated = 0
+        self.tp_atr_activated = 0
 
         # Auto-detect pip factor
         self.pip_factor = config.get_pip_factor(symbol)
@@ -157,8 +158,9 @@ class SetupDetector:
 
         Exit conditions (priority order):
         1. Stop loss hit (20 pips fixed)
-        2. Break Even by ATR retracement
-        3. EMA20 crosses EMA50 back (trend reversal)
+        2. Take Profit ATR (dynamic)
+        3. Break Even by ATR retracement
+        4. EMA20 crosses EMA50 back (trend reversal)
 
         Returns:
             dict with trade outcome details including exit_idx and exit_type
@@ -178,7 +180,7 @@ class SetupDetector:
         for i in range(entry_idx, len(df)):
             candle = df.iloc[i]
 
-            # Check Stop Loss FIRST (highest priority)
+            # PRIORITY 1: Check Stop Loss FIRST
             if direction == 'LONG':
                 if candle['low'] <= sl_price:
                     pips = (sl_price - entry_price) * self.pip_factor
@@ -206,7 +208,46 @@ class SetupDetector:
                         'exit_reason': 'Stop Loss'
                     }
 
-            # Check BE ATR (second priority) - only after entry candle
+            # PRIORITY 2: Check TP ATR (after entry candle)
+            if self.use_tp_atr and i > entry_idx:
+                ema20_current = candle['ema20']
+                atr_current = candle['atr']
+
+                if not np.isnan(ema20_current) and not np.isnan(atr_current) and atr_current > 0:
+                    if direction == 'LONG':
+                        tp_target = ema20_current + (self.tp_atr_multiplier * atr_current)
+                        if candle['high'] >= tp_target:
+                            # Exit at TP target price (NOT high)
+                            pips = (tp_target - entry_price) * self.pip_factor
+                            self.tp_atr_activated += 1
+                            return {
+                                'outcome': 'WIN',
+                                'exit_date': candle['datetime'],
+                                'exit_price': tp_target,
+                                'exit_idx': i,
+                                'exit_type': 'TP_ATR',
+                                'pips': round(pips, 1),
+                                'candles_held': i - entry_idx,
+                                'exit_reason': f'TP ATR {self.tp_atr_multiplier}'
+                            }
+                    else:  # SHORT
+                        tp_target = ema20_current - (self.tp_atr_multiplier * atr_current)
+                        if candle['low'] <= tp_target:
+                            # Exit at TP target price (NOT low)
+                            pips = (entry_price - tp_target) * self.pip_factor
+                            self.tp_atr_activated += 1
+                            return {
+                                'outcome': 'WIN',
+                                'exit_date': candle['datetime'],
+                                'exit_price': tp_target,
+                                'exit_idx': i,
+                                'exit_type': 'TP_ATR',
+                                'pips': round(pips, 1),
+                                'candles_held': i - entry_idx,
+                                'exit_reason': f'TP ATR {self.tp_atr_multiplier}'
+                            }
+
+            # PRIORITY 3: Check BE ATR (after entry candle)
             if self.use_be_atr and i > entry_idx:
                 atr_val = candle['atr']
 
@@ -248,7 +289,7 @@ class SetupDetector:
                                 'exit_reason': 'Break Even ATR'
                             }
 
-            # Check EMA cross reversal (exit condition)
+            # PRIORITY 4: Check EMA cross reversal (exit condition)
             if i > entry_idx:  # Don't check on entry candle
                 cross_direction = self.detect_ema_cross(df, i)
 
@@ -387,6 +428,12 @@ class SetupDetector:
                             last_cross_direction = None
                             separation_achieved = False
 
+                        elif trade_result['exit_type'] == 'TP_ATR':
+                            # TP ATR exit - RESET everything
+                            skip_until_idx = trade_result['exit_idx']
+                            last_cross_direction = None
+                            separation_achieved = False
+
                         elif trade_result['exit_type'] == 'CROSS':
                             # Cross reversal exit - Use as NEW signal
                             skip_until_idx = trade_result['exit_idx']
@@ -402,6 +449,8 @@ class SetupDetector:
             print(f"🔧 Filtered by DI H4: {self.filtered_by_di_h4} potential entries rejected")
         if self.use_be_atr:
             print(f"🔧 BE ATR activated: {self.be_activated} trades closed at break even")
+        if self.use_tp_atr:
+            print(f"🔧 TP ATR activated: {self.tp_atr_activated} trades closed at take profit")
 
         return self.setups
 
@@ -499,7 +548,7 @@ class SetupDetector:
         else:
             print(f"   ❌ BE ATR: OFF")
         if self.use_tp_atr:
-            print(f"   ✅ TP ATR (multiplier: {self.tp_atr_multiplier})")
+            print(f"   ✅ TP ATR (multiplier: {self.tp_atr_multiplier}) - Activated: {self.tp_atr_activated}")
         else:
             print(f"   ❌ TP ATR: OFF")
 
